@@ -9,8 +9,16 @@ import requests
 import pandas as pd
  
 from dotenv import load_dotenv
- 
-load_dotenv()
+
+# __file__ isn't defined when Databricks runs this via the web editor
+# (it execs cell-by-cell, not `python script.py`), so fall back to cwd —
+# which Databricks Repos already sets to this file's own folder.
+try:
+    _env_dir = Path(__file__).resolve().parent
+except NameError:
+    _env_dir = Path(os.getcwd())
+
+load_dotenv(dotenv_path=_env_dir / ".env")
 
 # Constants 
 FINHUB_API_KEY = os.getenv("FINNHUB_API_KEY")
@@ -25,7 +33,8 @@ TMDB_BASE_URL = "https://api.themoviedb.org/3"
 FMP_BASE_URL = "https://financialmodelingprep.com/stable"
 
 
-OUTPUT_DIR = Path("exploration/raw_data")
+VOLUME_PATH = "/Volumes/bootcamp_students/oscr_bronze/raw_landing"
+OUTPUT_DIR = Path(f"{VOLUME_PATH}/raw_data")
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
  
 def save_json(name, data):
@@ -55,6 +64,48 @@ def fetch_finnhub_news(symbol):
         f"{FINHUB_BASE_URL}/company-news",
         params={"symbol": symbol, "from": str(week_ago), "to": str(today), "token": FINHUB_API_KEY},
     )
+
+
+def check_finnhub_news_range(symbol, from_date, to_date):
+    """One-off diagnostic: does a narrow, explicit date range return articles
+    that a wide 365-day request silently dropped? Not part of the regular
+    pipeline — call directly when investigating gaps in gold_symbol_analyst_sentiment.
+    """
+    r = requests.get(
+        f"{FINHUB_BASE_URL}/company-news",
+        params={"symbol": symbol, "from": from_date, "to": to_date, "token": FINHUB_API_KEY},
+    )
+    articles = r.json()
+    print(f"{symbol} {from_date} to {to_date}: {len(articles)} articles")
+    return articles
+
+
+def backfill_finnhub_news(symbol, days_back=365, chunk_days=30):
+    """One-off historical backfill, chunked to avoid Finnhub silently
+    truncating wide date-range requests — confirmed: a 365-day request
+    returned 0 articles for May, but a narrow May-only request returned 247.
+    Call directly, once. Not part of the daily pipeline (that stays on the
+    cheap 7-day fetch_finnhub_news).
+    """
+    today = date.today()
+    cutoff = today - timedelta(days=days_back)
+    all_articles = []
+    chunk_end = today
+    while chunk_end > cutoff:
+        chunk_start = max(chunk_end - timedelta(days=chunk_days), cutoff)
+        r = requests.get(
+            f"{FINHUB_BASE_URL}/company-news",
+            params={"symbol": symbol, "from": str(chunk_start), "to": str(chunk_end), "token": FINHUB_API_KEY},
+        )
+        if r.ok:
+            batch = r.json()
+            print(f"{symbol} {chunk_start} to {chunk_end}: {len(batch)} articles")
+            all_articles.extend(batch)
+        else:
+            print(f"{symbol} {chunk_start} to {chunk_end}: FAILED {r.status_code} {r.text}")
+        chunk_end = chunk_start - timedelta(days=1)
+    save_json(f"finnhub_company_news_{symbol}", all_articles)
+    return all_articles
 
 
 def fetch_finnhub_recommendation(symbol):
@@ -150,8 +201,11 @@ def explore_tmdb_watch_providers():
     save_json("tmdb_watch_providers", r.json()) if r.ok else print(r.text)
 
 if __name__ == "__main__":
-    # for symbol in ["NFLX", "DIS"]:
-    #     explore_symbol(symbol)
-    # explore_tmdb_trending()
+    # Backfill already ran and landed successfully — don't call it again,
+    # it would just overwrite itself with the 7-day window below it anyway.
+    # Regular daily pipeline:
+    for symbol in ["NFLX", "DIS"]:
+        explore_symbol(symbol)
+    explore_tmdb_trending()
     explore_tmdb_watch_providers()
-    # explore_appstore()
+    explore_appstore()
