@@ -1,6 +1,6 @@
 # OSCR: Streaming Content Popularity & Sentiment Pipeline
 
-## What this is trying to achieve
+## what am I trying to achieve
 
 Track Netflix and Disney+ popularity from three angles that don't normally
 talk to each other: app-store rank, Wall Street sentiment on the parent
@@ -71,7 +71,7 @@ appending, so backfilling a day twice doesn't double it. None of this
 depends on remembering what already ran; it's just not possible to
 duplicate data by construction.
 
-## Why RAG is here
+## why RAG is here
 
 The numeric gold tables already answer "what changed": rank moved, analyst
 sentiment shifted, revenue grew. RAG exists purely to answer "why," which
@@ -87,7 +87,7 @@ doesn't filter for relevance. Asking for 3 results always returns 3, even
 if only one is actually on-topic. The score gap between them matters more
 than the row count.
 
-## What I learned
+## what I learned
 
 - Idempotency has to be designed per layer, not bolted on. Append, MERGE,
   and delete-then-insert are three different answers to "what happens if
@@ -102,3 +102,7 @@ than the row count.
   copies against each other.
 - A retrieved chunk isn't automatically a relevant one. The ranking score
   is the thing to check, not the fact that something came back at all.
+
+<img width="1507" height="556" alt="Screenshot 2026-09-06 at 4 26 38 PM" src="https://github.com/user-attachments/assets/76ec32cb-b316-46d3-b064-91cd8fe28131" />
+<img width="3017" height="732" alt="image" src="https://github.com/user-attachments/assets/209ba8dc-4d81-4e90-8411-f6904cfacbe5" />
+<img width="3012" height="1647" alt="image" src="https://github.com/user-attachments/assets/9ccfd398-9767-4f38-9bfd-79faad0f300c" />
