@@ -207,9 +207,8 @@ set to `none` or the `/v1/responses` API instead).
   against this index, where the correct match scored ~5x higher than the two
   off-topic ones. Don't assume every retrieved chunk is relevant; check the
   score gap.
-- **Known gaps**: `bronze_finnhub_trades` (streaming) is scaffolded but not
-  yet live-verified against a real WebSocket message. `bronze_polygon_aggs`
-  is not implemented — deliberately, until a real sample response justifies
-  the schema. Job orchestration and the vector index are configured directly
-  in the Databricks workspace and aren't files this repo can track (see
-  table above).
+- **Known gaps**: job orchestration and the vector index are configured
+  directly in the Databricks workspace and aren't files this repo can track
+  (see table above). Streaming (Finnhub trades) and Polygon aggregates were
+  explored but deliberately left out of scope — not wired into any job or
+  gold table; see `docs_schema.md` if you want the detail on why.
