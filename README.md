@@ -72,17 +72,23 @@ Being upfront about this because it matters if you're reviewing the repo:
 
 | Layer | Where it lives |
 |---|---|
-| API pull scripts (`explore_data.py`) | This repo, `src/` |
-| Bronze ingestion (`01_bronze_ingest.ipynb`) | This repo, `src/` |
-| Data quality gate (`data_quality_checks.py`) | This repo, `src/` |
-| Silver + gold transforms, job orchestration, the `rag_text_corpus` build, and the Vector Search index config | Databricks workspace notebooks (Catalog Explorer: `bootcamp_students.oscr_silver` / `oscr_gold`) — not yet exported to git |
+| API pull script (`src/00_fetch_to_volume.py`) | This repo, `src/` |
+| Bronze ingestion (`src/01_bronze_ingest.ipynb`) | This repo, `src/` |
+| Silver transforms (`src/02_silver_transform.py`) | This repo, `src/` |
+| Gold transforms (`src/03_gold_transform.py`) | This repo, `src/` |
+| Data quality gate (`src/data_quality_checks.py`) | This repo, `src/` |
+| `app_rank_history` DDL (`src/ddl_app_rank_history.py`) | This repo, `src/` |
+| Job orchestration and the Vector Search index config (`rag_text_corpus_index`) | Databricks workspace only — a scheduled Job definition and a UI-configured search index aren't files that export cleanly to git |
 
-The silver/gold notebooks and the vector index are live and working (built
-and verified directly in the workspace), they just aren't pulled into this
-repo yet. If you're setting this up from scratch, either recreate those
-notebooks from the schema/logic described below, or connect this repo as a
-Databricks Repo and pull the workspace notebooks in before treating this as
-the single source of truth.
+Silver and gold were originally built and iterated on directly in a
+Databricks Git folder before being pulled into this repo (via Databricks'
+notebook "Download as > Zip - Source" export) — worth knowing if you ever
+see two copies of a notebook drift: the Databricks workspace is where things
+get authored and run, this repo is where they get reviewed and versioned.
+One thing to clean up in the workspace as a result: a stray
+`src/01_bronze_ingest.py` there writes bronze tables with `mode("overwrite")`,
+which contradicts the append-only bronze design below — delete it in favor
+of the notebook actually committed here.
 
 ## Data sources
 
@@ -139,8 +145,8 @@ databricks secrets put-secret oscr finnhub_api_key
 
 **4. Pull raw data into the landing volume**
 
-Run `src/explore_data.py` (from a notebook cell or `%run`) to hit the Finnhub,
-TMDB, and FMP APIs and write raw JSON to
+Run `src/00_fetch_to_volume.py` (from a notebook cell or `%run`) to hit the
+Finnhub, TMDB, and FMP APIs and write raw JSON to
 `/Volumes/bootcamp_students/oscr_bronze/raw_landing/raw_data/`. This is the
 only step that talks to the public internet; everything after this reads
 from the volume.
@@ -153,8 +159,10 @@ JSON with an explicit schema (no inference) and appends into
 
 **6. Run silver + gold**
 
-Run the silver notebooks (alias resolution, MERGE upserts, typing) followed
-by gold (aggregations + the `rag_text_corpus` build). See
+Run `src/02_silver_transform.py` (alias resolution, MERGE upserts, typing),
+then `src/03_gold_transform.py` (aggregations + the `rag_text_corpus` build).
+`src/ddl_app_rank_history.py` creates the one gold table gold_transform
+expects to already exist before it appends to it. See
 `oscr-capstone-data-architecture.md` for exactly what each gold table
 computes.
 
@@ -202,5 +210,6 @@ set to `none` or the `/v1/responses` API instead).
 - **Known gaps**: `bronze_finnhub_trades` (streaming) is scaffolded but not
   yet live-verified against a real WebSocket message. `bronze_polygon_aggs`
   is not implemented — deliberately, until a real sample response justifies
-  the schema. Silver/gold notebooks and the vector index config aren't
-  exported to this repo yet (see table above).
+  the schema. Job orchestration and the vector index are configured directly
+  in the Databricks workspace and aren't files this repo can track (see
+  table above).
