@@ -87,6 +87,14 @@ doesn't filter for relevance. Asking for 3 results always returns 3, even
 if only one is actually on-topic. The score gap between them matters more
 than the row count.
 
+Everything above was RAG that answers questions. `src/04_setup_vector_index.py`
+and `src/05_agent_predictions.py` are the piece that acts on them: the
+agent retrieves grounded context, asks an LLM for a beat, meet, or miss call
+on next quarter's subscribers, and writes that call to a new `predictions`
+table. That write is the actual state change. Both notebooks are new and
+untested against a live run as of this commit, so treat them as a first
+pass, not verified working code.
+
 ## what I learned
 
 - Idempotency has to be designed per layer, not bolted on. Append, MERGE,
