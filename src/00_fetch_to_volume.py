@@ -3,8 +3,7 @@ import json
  
 from pathlib import Path
 from datetime import datetime, date, timedelta
-import token
- 
+
 import requests
 import pandas as pd
  
@@ -21,13 +20,13 @@ except NameError:
 load_dotenv(dotenv_path=_env_dir / ".env")
 
 # Constants 
-FINHUB_API_KEY = os.getenv("FINNHUB_API_KEY")
+FINNHUB_API_KEY = os.getenv("FINNHUB_API_KEY")
 POLYGON_API_KEY = os.getenv("POLYGON_API_KEY")
 TMDB_API_KEY = os.getenv("TMDB_API_KEY")
 FMP_API_KEY = os.getenv("FMP_API_KEY")
  
 # API URLs
-FINHUB_BASE_URL = "https://finnhub.io/api/v1"
+FINNHUB_BASE_URL = "https://finnhub.io/api/v1"
 POLYGON_BASE_URL = "https://api.polygon.io/v2"
 TMDB_BASE_URL = "https://api.themoviedb.org/3"
 FMP_BASE_URL = "https://financialmodelingprep.com/stable"
@@ -61,8 +60,8 @@ def fetch_finnhub_news(symbol):
     today = date.today()
     week_ago = today - timedelta(days=7)
     return requests.get(
-        f"{FINHUB_BASE_URL}/company-news",
-        params={"symbol": symbol, "from": str(week_ago), "to": str(today), "token": FINHUB_API_KEY},
+        f"{FINNHUB_BASE_URL}/company-news",
+        params={"symbol": symbol, "from": str(week_ago), "to": str(today), "token": FINNHUB_API_KEY},
     )
 
 
@@ -72,8 +71,8 @@ def check_finnhub_news_range(symbol, from_date, to_date):
     pipeline — call directly when investigating gaps in gold_symbol_analyst_sentiment.
     """
     r = requests.get(
-        f"{FINHUB_BASE_URL}/company-news",
-        params={"symbol": symbol, "from": from_date, "to": to_date, "token": FINHUB_API_KEY},
+        f"{FINNHUB_BASE_URL}/company-news",
+        params={"symbol": symbol, "from": from_date, "to": to_date, "token": FINNHUB_API_KEY},
     )
     articles = r.json()
     print(f"{symbol} {from_date} to {to_date}: {len(articles)} articles")
@@ -94,8 +93,8 @@ def backfill_finnhub_news(symbol, days_back=365, chunk_days=30):
     while chunk_end > cutoff:
         chunk_start = max(chunk_end - timedelta(days=chunk_days), cutoff)
         r = requests.get(
-            f"{FINHUB_BASE_URL}/company-news",
-            params={"symbol": symbol, "from": str(chunk_start), "to": str(chunk_end), "token": FINHUB_API_KEY},
+            f"{FINNHUB_BASE_URL}/company-news",
+            params={"symbol": symbol, "from": str(chunk_start), "to": str(chunk_end), "token": FINNHUB_API_KEY},
         )
         if r.ok:
             batch = r.json()
@@ -110,8 +109,8 @@ def backfill_finnhub_news(symbol, days_back=365, chunk_days=30):
 
 def fetch_finnhub_recommendation(symbol):
     return requests.get(
-        f"{FINHUB_BASE_URL}/stock/recommendation",
-        params={"symbol": symbol, "token": FINHUB_API_KEY},
+        f"{FINNHUB_BASE_URL}/stock/recommendation",
+        params={"symbol": symbol, "token": FINNHUB_API_KEY},
     )
 
 
