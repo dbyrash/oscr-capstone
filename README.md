@@ -87,13 +87,14 @@ doesn't filter for relevance. Asking for 3 results always returns 3, even
 if only one is actually on-topic. The score gap between them matters more
 than the row count.
 
-Everything above was RAG that answers questions. `src/04_setup_vector_index.py`
-and `src/05_agent_predictions.py` are the piece that acts on them: the
-agent retrieves grounded context, asks an LLM for a beat, meet, or miss call
-on next quarter's subscribers, and writes that call to a new `predictions`
-table. That write is the actual state change. Both notebooks are new and
-untested against a live run as of this commit, so treat them as a first
-pass, not verified working code.
+Everything above is RAG that answers questions. `src/04_setup_vector_index.py`
+and `src/05_agent_predictions.py` are written to close that gap with an
+actual agent: one designed to retrieve grounded context, ask an LLM for a
+beat, meet, or miss call on next quarter's subscribers, and write that call
+to a new `predictions` table, a real state change the rest of the pipeline
+doesn't have. Neither notebook has been run against a live workspace yet.
+This is not incorporated functionality, it's code written toward that goal;
+treat it as a design on paper until a row actually lands in `predictions`.
 
 ## what I learned
 
