@@ -1,4 +1,4 @@
-# OSCR: Streaming Content Popularity & Sentiment Pipeline
+# OSCR (Online Streaming Churn Rating): Streaming Content Popularity & Sentiment Pipeline
 
 ## what am I trying to achieve
 
@@ -15,50 +15,50 @@ Search. No Docker, nothing to run locally end-to-end.
 ## Architecture
 
 ```
-                         STRUCTURED SIDE                                    UNSTRUCTURED SIDE
-                         ----------------                                   ------------------
-  APIs                Finnhub, FMP,                                       TMDB reviews,
-                       Apple App Store RSS                                 Finnhub news
-    |                        |                                                  |
-    v                        v                                                  v
-+--------+          +------------------+                              +------------------+
-| BRONZE |  ----->  | raw, append-only |  ----------------------------| raw review/news  |
-+--------+          | one table per    |                              | text, untouched  |
-                     | source endpoint  |                              +------------------+
-                     +--------+---------+                                        |
-                              |                                                   |
-                              v                                                   v
-                     +------------------+                              +------------------+
-                     |     SILVER       |                              |     SILVER       |
-                     | dedupe, alias-   |                              | dedupe, typed,   |
-                     | match, MERGE     |                              | cleaned pass-    |
-                     | (current state)  |                              | through          |
-                     +--------+---------+                              +--------+---------+
-                              |                                                  |
-                              v                                                  v
-      +--------------------------------------------+              +---------------------------+
-      |                   GOLD                      |              |   GOLD: rag_text_corpus   |
-      |  symbol_analyst_sentiment                    |              |   (doc_id, text_content)  |
-      |  symbol_forward_estimates                     |             +-------------+-------------+
-      |  app_rankings_by_brand                        |                           |
-      |  app_rank_history  <- time series             |                           v
-      |  show_engagement                              |             +---------------------------+
-      +--------------------+-------------------------+              |  Vector Search index      |
-                            |                                        |  rag_text_corpus_index    |
-                            |                                        |  (hybrid, embeds on       |
-                            |                                        |   Triggered sync)         |
-                            |                                        +-------------+-------------+
-                            |                                                      |
-                            v                                                      v
-                  numeric popularity signals                        question -> hybrid search ->
-                  (rank, sentiment score,                            augmented prompt -> LLM ->
-                  revenue growth, ratings)                            grounded answer, e.g. via
-                                                                       Databricks Playground/Agent
-                            \_______________________  ______________________/
-                                                    \/
-                                     one popularity picture: what
-                                     changed (numbers) and why (text)
+  STRUCTURED SIDE                           UNSTRUCTURED SIDE
+  Finnhub, FMP, App Store RSS               TMDB reviews, Finnhub news
+              |                                          |
+              v                                          v
+ +--------------------------+               +--------------------------+
+ | BRONZE                   |               | BRONZE                   |
+ | raw, append-only,        |               | raw review/news text,    |
+ | one table per endpoint   |               | untouched                |
+ +------------+-------------+               +------------+-------------+
+              |                                          |
+              v                                          v
+ +--------------------------+               +--------------------------+
+ | SILVER                   |               | SILVER                   |
+ | dedupe, alias-match,     |               | dedupe, typed, cleaned   |
+ | MERGE (current state)    |               | pass-through             |
+ +------------+-------------+               +------------+-------------+
+              |                                          |
+              v                                          v
+ +--------------------------+               +--------------------------+
+ | GOLD                     |               | GOLD: rag_text_corpus    |
+ | symbol_analyst_sentiment |               | (doc_id, text_content)   |
+ | symbol_forward_estimates |               +------------+-------------+
+ | app_rankings_by_brand    |                            |
+ | app_rank_history         |                            v
+ | show_engagement          |               +--------------------------+
+ +------------+-------------+               | VECTOR SEARCH INDEX      |
+              |                             | rag_text_corpus_index    |
+              v                             | hybrid, Triggered sync   |
+ +--------------------------+               +------------+-------------+
+ | NUMERIC SIGNALS          |                            |
+ | rank, sentiment score,   |                            v
+ | growth, ratings          |               +--------------------------+
+ +------------+-------------+               | AGENT / LLM              |
+              |                             | hybrid search -> prompt  |
+              |                             | -> grounded answer       |
+              |                             +------------+-------------+
+              +------------------------------------------+
+                                   |
+                                   v
+           one popularity picture: what changed (numbers)
+           and why (text)
 ```
+
+![OSCR architecture](docs/architecture.png)
 
 ## Idempotency
 
@@ -87,30 +87,31 @@ doesn't filter for relevance. Asking for 3 results always returns 3, even
 if only one is actually on-topic. The score gap between them matters more
 than the row count.
 
-Everything above is RAG that answers questions. `src/04_setup_vector_index.py`
-and `src/05_agent_predictions.py` are written to close that gap with an
-actual agent: one designed to retrieve grounded context, ask an LLM for a
-beat, meet, or miss call on next quarter's subscribers, and write that call
-to a new `predictions` table, a real state change the rest of the pipeline
+Everything above is RAG that answers questions.
+[`04_setup_vector_index.py`](src/04_setup_vector_index.py) and
+[`05_agent_predictions.py`](src/05_agent_predictions.py) are written to
+close that gap with an actual agent: one designed to retrieve grounded
+context, ask an LLM for a beat, meet, or miss call on next quarter's
+subscribers, and write that call to a new `predictions` table, a real state change the rest of the pipeline
 doesn't have. Neither notebook has been run against a live workspace yet.
 This is not incorporated functionality, it's code written toward that goal;
 treat it as a design on paper until a row actually lands in `predictions`.
 
 ## what I learned
 
-- Idempotency has to be designed per layer, not bolted on. Append, MERGE,
-  and delete-then-insert are three different answers to "what happens if
-  this reruns," each fitted to what that layer actually needs.
-- RAG is a narrow tool. It's for text you can't reduce to a number, not a
-  replacement for the rest of the pipeline; most of the real signal here
-  still comes from plain structured data.
-- A Databricks workspace and a git repo drift the moment you're not
-  deliberate about syncing them. Comparing the two turned up a stray
-  notebook in the workspace writing bronze with `overwrite` instead of
-  `append`, a quiet bug that only surfaces when you actually diff the two
-  copies against each other.
-- A retrieved chunk isn't automatically a relevant one. The ranking score
-  is the thing to check, not the fact that something came back at all.
+- Idempotency has to be designed per layer. Append, MERGE, and
+  delete-then-insert are three different answers to "what if this reruns,"
+  and each layer needs the one that fits it.
+- RAG is for text you can't turn into a number. It doesn't replace the rest
+  of the pipeline, and most of the real signal here still comes from
+  structured data.
+- A Databricks workspace and a git repo drift the moment you stop syncing
+  them. Comparing the two turned up a stray notebook in the workspace
+  writing bronze with `overwrite` instead of `append`, a quiet bug that only
+  showed up when I diffed the two copies.
+- Search results come back ranked, not filtered. Ask for 3 and you get 3,
+  even if only one is relevant, so I check the score gap instead of
+  trusting everything that comes back.
 
 <img width="1507" height="556" alt="Screenshot 2026-09-06 at 4 26 38 PM" src="https://github.com/user-attachments/assets/76ec32cb-b316-46d3-b064-91cd8fe28131" />
 <img width="3017" height="732" alt="image" src="https://github.com/user-attachments/assets/209ba8dc-4d81-4e90-8411-f6904cfacbe5" />
