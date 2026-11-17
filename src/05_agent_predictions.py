@@ -1,4 +1,11 @@
 # Databricks notebook source
+# /// script
+# [tool.databricks.environment]
+# environment_version = "6"
+# dependencies = [
+#   "databricks-vectorsearch",
+# ]
+# ///
 # The agent: retrieves grounded context from rag_text_corpus_index,
 # combines it with the structured gold signals, asks an LLM for a concrete
 # beat/meet/miss call on next quarter's subscriber numbers, and writes that
@@ -10,6 +17,11 @@
 # rows to actually have doc_ids that mention the symbol/show you're asking
 # about; with a 60-row corpus, expect thin coverage for symbols that don't
 # have matching TMDB shows.
+
+# COMMAND ----------
+
+# MAGIC %pip install databricks-vectorsearch
+# MAGIC dbutils.library.restartPython()
 
 # COMMAND ----------
 
@@ -67,6 +79,7 @@ def retrieve_context(symbol, num_results=5):
 
 
 def structured_signals(symbol):
+    brand = {"NFLX": "Netflix", "DIS": "Disney+"}.get(symbol, symbol)
     sentiment = spark.sql(f"""
         SELECT * FROM {GOLD}.symbol_analyst_sentiment
         WHERE symbol = '{symbol}' ORDER BY period DESC LIMIT 1
@@ -75,27 +88,41 @@ def structured_signals(symbol):
         SELECT * FROM {GOLD}.symbol_forward_estimates
         WHERE symbol = '{symbol}' ORDER BY date DESC LIMIT 1
     """).collect()
+    popularity = spark.sql(f"""
+        SELECT snapshot_date, ROUND(AVG(101 - _rank), 1) AS popularity_score
+        FROM {GOLD}.app_rankings_by_brand
+        WHERE brand = '{brand}'
+        GROUP BY snapshot_date
+        ORDER BY snapshot_date DESC
+        LIMIT 7
+    """).collect()
     return {
+        "brand": brand,
+        "recent_popularity": [r.asDict() for r in popularity],
         "sentiment": sentiment[0].asDict() if sentiment else None,
         "estimates": estimates[0].asDict() if estimates else None,
     }
 
 
 def build_prompt(symbol, signals, chunks):
+    brand = {"NFLX": "Netflix", "DIS": "Disney+"}.get(symbol, symbol)
     context_text = "\n\n".join(
         f"[{c['doc_id']}] {c['text_content'][:500]}" for c in chunks
     )
-    return f"""You are assessing whether {symbol} is likely to beat, meet, or
-miss next quarter's subscriber estimates.
+    return f"""You are assessing the near-term popularity trajectory of {brand}
+on streaming, using only the signals below. Call whether {brand}'s app-store
+popularity is likely to RISE, HOLD, or FALL next period, and explain why.
 
-Structured signals:
+Structured signals (recent app-store popularity trend, analyst sentiment,
+revenue/EPS estimates):
 {json.dumps(signals, default=str, indent=2)}
 
-Retrieved viewer/news commentary:
+Retrieved viewer reviews and news:
 {context_text}
 
-Respond with strict JSON only, no other text:
-{{"call": "beat" | "meet" | "miss", "confidence": "low" | "medium" | "high", "reasoning": "one or two sentences, citing what actually drove the call"}}
+Ground your explanation in the retrieved text where you can. Respond with
+strict JSON only, no other text:
+{{"call": "rise" | "hold" | "fall", "confidence": "low" | "medium" | "high", "reasoning": "one or two sentences, citing the specific signals and retrieved text that drove the call"}}
 """
 
 # COMMAND ----------

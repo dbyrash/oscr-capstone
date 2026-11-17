@@ -1,4 +1,8 @@
 # Databricks notebook source
+# /// script
+# [tool.databricks.environment]
+# environment_version = "6"
+# ///
 # Codifies the AI Search / Vector Search endpoint and index that were
 # originally created by hand in the Databricks UI (Catalog Explorer ->
 # rag_text_corpus -> Create -> Vector Search Index). Safe to rerun: catches
@@ -16,6 +20,7 @@
 
 # COMMAND ----------
 
+# DBTITLE 1,Configure Vector Search client
 from databricks.vector_search.client import VectorSearchClient
 
 CATALOG = "bootcamp_students"
@@ -54,9 +59,28 @@ except Exception as e:
 
 # COMMAND ----------
 
+import json
+status = vsc.get_index(ENDPOINT_NAME, INDEX_NAME).describe().get("status", {})
+print(json.dumps(status, indent=2, default=str))
+
+# COMMAND ----------
+
+# DBTITLE 1,Wait for index and run sample query
 # Sanity check: confirm the index is queryable before anything downstream
 # (the agent notebook) depends on it.
+from databricks.vector_search.exceptions import BadRequest
+
 index = vsc.get_index(ENDPOINT_NAME, INDEX_NAME)
+while True:
+    try:
+        index.similarity_search(query_text="test", columns=["doc_id"], num_results=1, query_type="HYBRID")
+        break
+    except BadRequest:
+        import time
+        time.sleep(5)
+    import time
+    time.sleep(5)
+    index = vsc.get_index(ENDPOINT_NAME, INDEX_NAME)
 sample = index.similarity_search(
     query_text="viewer reaction to a show",
     columns=["doc_id", "text_content"],
