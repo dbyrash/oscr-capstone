@@ -69,7 +69,7 @@ next stage:
 
 `ingest -> bronze -> DQ(bronze) -> silver -> DQ(silver) -> gold -> DQ(gold)`
 
-It runs daily on a schedule and has a green run history across weeks of runs. The RAG corpus and vector index are built (`rag_text_corpus`, `rag_text_corpus_index`); the RAG corpus, vector index, and prediction agent all run end to end (the agent writes rise/hold/fall popularity calls to `predictions`); folding the agent in as a final task in this scheduled job is the remaining step.
+It runs daily on a schedule and has a green run history across weeks of runs. The RAG corpus, vector index, and prediction agent all run end to end (the agent writes rise/hold/fall popularity calls to `predictions`); folding the agent in as a final task in this scheduled job is the remaining step.
 
 ![Workflow DAG](screenshots/workflow_dag.png)
 
