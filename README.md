@@ -69,7 +69,7 @@ next stage:
 
 `ingest -> bronze -> DQ(bronze) -> silver -> DQ(silver) -> gold -> DQ(gold)`
 
-It runs daily on a schedule and has a green run history across weeks of runs. The RAG corpus, vector index, and prediction agent all run end to end (the agent writes rise/hold/fall popularity calls to `predictions`); folding the agent in as a final task in this scheduled job is the remaining step.
+It is scheduled to run daily, and every layer is idempotent, so a rerun reconciles the data instead of duplicating it. The RAG corpus, vector index, and prediction agent all run end to end (the agent writes rise/hold/fall popularity calls to `predictions`). The schedule is currently paused; folding the agent in as the final task, so a fresh prediction lands on every run, is the remaining step.
 
 ![Workflow DAG](screenshots/workflow_dag.png)
 
@@ -92,8 +92,8 @@ rather than one blanket rule.
   `app_rank_history`, deletes the day being written before appending it, so
   backfilling a day twice never doubles it.
 
-The scheduled job has run daily for weeks without duplicating data, which is
-the practical test of all of this.
+Rerunning the same window and watching the row counts hold steady is the
+practical test of all of this, and they do.
 
 ## why RAG is here
 

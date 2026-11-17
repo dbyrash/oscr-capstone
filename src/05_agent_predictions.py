@@ -8,7 +8,7 @@
 # ///
 # The agent: retrieves grounded context from rag_text_corpus_index,
 # combines it with the structured gold signals, asks an LLM for a concrete
-# beat/meet/miss call on next quarter's subscriber numbers, and writes that
+# rise/hold/fall call on a brand's near-term app-store popularity, and writes that
 # call as a new row to bootcamp_students.oscr_gold.predictions. This is the
 # one place in the pipeline where an LLM's judgment produces a real state
 # change, not just a descriptive aggregate.

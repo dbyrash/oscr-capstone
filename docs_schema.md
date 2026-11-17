@@ -1,6 +1,6 @@
 # OSCR — Bronze Layer Schemas
 
-Grounded in real API responses pulled and saved under `exploration/raw_data/` (not guessed, not inferred). Replaces the earlier draft, which was written before any live data existed.
+Grounded in real API responses captured during development (not guessed, not inferred). Replaces the earlier draft, which was written before any live data existed.
 
 ## Conventions
 
