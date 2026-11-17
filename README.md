@@ -63,7 +63,7 @@ Search. No Docker, nothing to run locally end-to-end.
 ## Orchestration
 
 The whole medallion pipeline runs as a scheduled Databricks Workflow
-(`subscriber growth prediction`), with a data-quality check wired in as a
+(`oscr popularity pipeline`), with a data-quality check wired in as a
 gate after every layer, so a bad batch stops the run before it reaches the
 next stage:
 
