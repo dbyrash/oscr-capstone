@@ -1,4 +1,4 @@
-# OSCR (Online Streaming Churn Rating): Streaming Content Popularity & Sentiment Pipeline
+# OSCR (Online Streaming Content Radar): Streaming Content Popularity & Sentiment Pipeline
 
 ## what am I trying to achieve
 
@@ -7,7 +7,7 @@ talk to each other: app-store rank, Wall Street sentiment on the parent
 stock, and what viewers actually write in reviews and news. The first two
 are numbers you can average into a score. The third is free text, and
 that's where the RAG layer comes in. Data comes from Finnhub, Financial
-Modeling Prep, TMDB, and the Apple App Store RSS feed.
+Modeling Prep, TMDB, and the Apple App Store RSS feed. The output is a near-term popularity-direction call per brand (rise / hold / fall): the numbers give the direction, and the RAG layer gives a grounded why from reviews and news.
 
 Runs entirely on Databricks: Unity Catalog, Delta Lake, Mosaic AI Vector
 Search. No Docker, nothing to run locally end-to-end.
@@ -60,16 +60,40 @@ Search. No Docker, nothing to run locally end-to-end.
 
 ![OSCR architecture](docs/architecture.png)
 
+## Orchestration
+
+The whole medallion pipeline runs as a scheduled Databricks Workflow
+(`subscriber growth prediction`), with a data-quality check wired in as a
+gate after every layer, so a bad batch stops the run before it reaches the
+next stage:
+
+`ingest -> bronze -> DQ(bronze) -> silver -> DQ(silver) -> gold -> DQ(gold)`
+
+It runs daily on a schedule and has a green run history across weeks of runs. The RAG corpus and vector index are built (`rag_text_corpus`, `rag_text_corpus_index`); the RAG corpus, vector index, and prediction agent all run end to end (the agent writes rise/hold/fall popularity calls to `predictions`); folding the agent in as a final task in this scheduled job is the remaining step.
+
+![Workflow DAG](screenshots/workflow_dag.png)
+
+![Workflow run history](screenshots/workflow_run_history.png)
+
 ## Idempotency
 
-Every write in this pipeline is safe to rerun. Bronze only appends, so
-replaying an ingestion never duplicates a batch that already landed. Silver
-uses `MERGE`: it upserts by key, so it always reflects current state no
-matter how many times it runs. The one gold history table
-(`app_rank_history`) deletes and reinserts a day's rows instead of blindly
-appending, so backfilling a day twice doesn't double it. None of this
-depends on remembering what already ran; it's just not possible to
-duplicate data by construction.
+Every layer is safe to rerun, and each uses the mechanism that fits it
+rather than one blanket rule.
+
+- Bronze lands raw data with an `_ingested_at` timestamp. The recommendation
+  and estimate feeds append; the news, review, registry and provider feeds
+  do a full refresh (drop and reload), because the source always returns the
+  full current set. Nothing downstream depends on bronze being deduped.
+- Silver is where current state is enforced: it keeps the latest row per key
+  by `_ingested_at` (a window plus `row_number` filter) and overwrites, so it
+  reflects current state no matter how many times bronze ran. The App Store
+  table uses a `MERGE` upsert instead, keyed on app id and storefront.
+- Gold overwrites its aggregate tables. The one time-series table,
+  `app_rank_history`, deletes the day being written before appending it, so
+  backfilling a day twice never doubles it.
+
+The scheduled job has run daily for weeks without duplicating data, which is
+the practical test of all of this.
 
 ## why RAG is here
 
@@ -87,15 +111,7 @@ doesn't filter for relevance. Asking for 3 results always returns 3, even
 if only one is actually on-topic. The score gap between them matters more
 than the row count.
 
-Everything above is RAG that answers questions.
-[`04_setup_vector_index.py`](src/04_setup_vector_index.py) and
-[`05_agent_predictions.py`](src/05_agent_predictions.py) are written to
-close that gap with an actual agent: one designed to retrieve grounded
-context, ask an LLM for a beat, meet, or miss call on next quarter's
-subscribers, and write that call to a new `predictions` table, a real state change the rest of the pipeline
-doesn't have. Neither notebook has been run against a live workspace yet.
-This is not incorporated functionality, it's code written toward that goal;
-treat it as a design on paper until a row actually lands in `predictions`.
+Everything above is RAG that answers questions. [`04_setup_vector_index.py`](src/04_setup_vector_index.py) and [`05_agent_predictions.py`](src/05_agent_predictions.py) are the agent that acts on them. It does not forecast a number it cannot verify. Instead it reads the structured popularity and sentiment signals, retrieves the most relevant reviews and news, and produces a rise / hold / fall call on each brand's near-term app-store popularity, with a grounded explanation. That call is written to the `predictions` table, a real state change the rest of the pipeline does not have. Because popularity is something the pipeline actually measures (`app_rank_history`), the call can be checked against what happens next. Both notebooks run end to end against the live workspace: the vector index is built and synced on `oscr-rag-endpoint`, and each call is grounded in the retrieved documents plus the structured gold signals. See `docs/predictions_sample.txt` for sample output.
 
 ## what I learned
 
@@ -113,6 +129,6 @@ treat it as a design on paper until a row actually lands in `predictions`.
   even if only one is relevant, so I check the score gap instead of
   trusting everything that comes back.
 
-<img width="1507" height="556" alt="Screenshot 2026-09-06 at 4 26 38 PM" src="https://github.com/user-attachments/assets/76ec32cb-b316-46d3-b064-91cd8fe28131" />
-<img width="3017" height="732" alt="image" src="https://github.com/user-attachments/assets/209ba8dc-4d81-4e90-8411-f6904cfacbe5" />
-<img width="3012" height="1647" alt="image" src="https://github.com/user-attachments/assets/9ccfd398-9767-4f38-9bfd-79faad0f300c" />
+<img width="1507" height="556" alt="Screenshot 2026-09-06 at 4 26 38 PM" src="screenshots/screenshot_1.png" />
+<img width="3017" height="732" alt="image" src="screenshots/screenshot_2.png" />
+<img width="3012" height="1647" alt="image" src="screenshots/screenshot_3.png" />
