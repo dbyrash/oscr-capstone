@@ -6,8 +6,7 @@ SELECT name AS brand, snapshot_date AS d, CAST(101 - rank AS DOUBLE) AS populari
 FROM bootcamp_students.oscr_gold.app_rank_history
 WHERE _storefront = 'us' AND name IN ('Netflix', 'Disney+');
 
--- Terciles of all 7-day changes, both brands pooled. IF NOT EXISTS freezes them: a rerun never recomputes.
--- Rule: fall if delta < fall_below, rise if delta > rise_above, else hold.
+-- Pooled terciles of 7-day changes (fall < fall_below, rise > rise_above); IF NOT EXISTS freezes them.
 CREATE TABLE IF NOT EXISTS bootcamp_students.oscr_gold.move_cutoffs AS
 WITH deltas AS (
   SELECT a.d, b.popularity - a.popularity AS delta

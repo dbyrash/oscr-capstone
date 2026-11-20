@@ -37,7 +37,6 @@ FINNHUB_API_KEY = get_secret("FINNHUB_API_KEY")
 TMDB_API_KEY = get_secret("TMDB_API_KEY")
 FMP_API_KEY = get_secret("FMP_API_KEY")
  
-# API URLs
 FINNHUB_BASE_URL = "https://finnhub.io/api/v1"
 TMDB_BASE_URL = "https://api.themoviedb.org/3"
 FMP_BASE_URL = "https://financialmodelingprep.com/stable"
@@ -150,10 +149,7 @@ def fetch_finnhub_news(symbol):
 
 
 def check_finnhub_news_range(symbol, from_date, to_date):
-    """One-off diagnostic: does a narrow, explicit date range return articles
-    that a wide 365-day request silently dropped? Not part of the regular
-    pipeline — call directly when investigating gaps in gold_symbol_analyst_sentiment.
-    """
+    """One-off diagnostic: checks whether a narrow range returns articles a wide request dropped."""
     r = http_get(
         f"{FINNHUB_BASE_URL}/company-news",
         params={"symbol": symbol, "from": from_date, "to": to_date, "token": FINNHUB_API_KEY},
@@ -164,12 +160,7 @@ def check_finnhub_news_range(symbol, from_date, to_date):
 
 
 def backfill_finnhub_news(symbol, days_back=365, chunk_days=30):
-    """One-off historical backfill, chunked to avoid Finnhub silently
-    truncating wide date-range requests — confirmed: a 365-day request
-    returned 0 articles for May, but a narrow May-only request returned 247.
-    Call directly, once. Not part of the daily pipeline (that stays on the
-    cheap 7-day fetch_finnhub_news).
-    """
+    """One-off backfill in 30-day chunks: Finnhub silently truncates wide date ranges."""
     today = date.today()
     cutoff = today - timedelta(days=days_back)
     all_articles = []

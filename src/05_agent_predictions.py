@@ -7,21 +7,7 @@
 # ]
 # ///
 # DBTITLE 1,Agent overview
-# The agent: retrieves grounded context from rag_text_corpus_index,
-# combines it with the structured gold signals, asks an LLM for a concrete
-# rise/hold/fall call on a brand's near-term app-store popularity, and writes
-# that call as a row to bootcamp_students.oscr_gold.predictions. This is the
-# one place in the pipeline where an LLM's judgment produces a real state
-# change, not just a descriptive aggregate.
-#
-# IDEMPOTENT + BACKFILLABLE. Each run targets one "as of" date (default today)
-# and writes with delete-then-insert on that date, so re-running a date never
-# duplicates it -- the same pattern gold.app_rank_history uses. Set the
-# backfill_start widget to replay the agent weekly across history, which fills
-# the prediction_scorecard with real hit-rates today instead of a week from now.
-#
-# No look-ahead: popularity, sentiment, estimates and retrieved text are all
-# limited to rows dated on or before as_of_date.
+# Rise/hold/fall calls per brand; every input is limited to rows on or before as_of_date to avoid look-ahead.
 
 # COMMAND ----------
 
@@ -46,9 +32,10 @@ PREDICTIONS_TABLE = f"{GOLD}.predictions"
 SKIPS_TABLE = f"{GOLD}.prediction_skips"
 KEY = ["symbol", "prediction_date", "source", "variant"]
 
-# Confirm the exact serving endpoint name in your workspace under Serving in
-# the sidebar; Foundation Model API endpoint names vary by workspace/region.
+# Foundation Model endpoint names vary by workspace and region.
 LLM_ENDPOINT = "databricks-meta-llama-3-1-8b-instruct"
+# Pre-declared one-shot experiment: largest open-weight instruct model in Serving, same prompt and settings.
+BIG_LLM_ENDPOINT = "databricks-llama-4-maverick"
 
 SYMBOLS = ["NFLX", "DIS"]
 BRAND_OF = {"NFLX": "Netflix", "DIS": "Disney+"}
@@ -64,6 +51,7 @@ llm = mlflow.deployments.get_deploy_client("databricks")
 dbutils.widgets.text("as_of_date", date.today().isoformat())
 dbutils.widgets.text("backfill_start", "")  # set to backfill every scorable date from here to as_of_date
 dbutils.widgets.text("use_rag", "")         # empty = mode default; "true"/"false" = one variant (live only)
+dbutils.widgets.text("model", "")           # "big" = BIG_LLM_ENDPOINT, written as variant <variant>_big
 
 # COMMAND ----------
 
@@ -242,7 +230,7 @@ def scorable_dates(brand, start, end):
 def predict(symbol, as_of, source, use_rag):
     """Return (row, key); row is None when the reply never parsed."""
     key = {"symbol": symbol, "prediction_date": date.fromisoformat(as_of),
-           "source": source, "variant": "rag" if use_rag else "no_rag"}
+           "source": source, "variant": ("rag" if use_rag else "no_rag") + VARIANT_SUFFIX}
     chunks = retrieve_context(symbol, as_of) if use_rag else []
     parsed = get_call(build_prompt(symbol, structured_signals(symbol, as_of), chunks))
     if parsed is None:
@@ -272,6 +260,13 @@ backfill_start = dbutils.widgets.get("backfill_start").strip()
 use_rag_flag = dbutils.widgets.get("use_rag").strip().lower()
 if use_rag_flag not in ("", "true", "false"):
     raise ValueError(f"use_rag must be empty, true or false, got {use_rag_flag!r}")
+model_flag = dbutils.widgets.get("model").strip().lower()
+if model_flag not in ("", "big"):
+    raise ValueError(f"model must be empty or big, got {model_flag!r}")
+VARIANT_SUFFIX = "_big" if model_flag == "big" else ""
+if model_flag == "big":
+    LLM_ENDPOINT = BIG_LLM_ENDPOINT
+print(f"model endpoint: {LLM_ENDPOINT}")
 
 if backfill_start:
     # No news exists before 11-10, so a backfill only runs the no-RAG variant.

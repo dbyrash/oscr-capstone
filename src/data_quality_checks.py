@@ -29,8 +29,7 @@ def assert_no_duplicate_keys(table_name, key_columns):
 
 FRESHNESS_HOURS = 36
 
-# (table, filter): _fetched_at comes from the API call, unlike _ingested_at,
-# which bronze resets on every run even when the fetch failed.
+# _fetched_at, not _ingested_at: bronze resets _ingested_at on every run even when the fetch failed.
 FRESHNESS_SOURCES = [
     ("bootcamp_students.oscr_bronze.finnhub_company_news", None),
     ("bootcamp_students.oscr_bronze.finnhub_recommendation_trends", None),

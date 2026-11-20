@@ -3,20 +3,8 @@
 # [tool.databricks.environment]
 # environment_version = "6"
 # ///
-# Codifies the AI Search / Vector Search endpoint and index that were
-# originally created by hand in the Databricks UI (Catalog Explorer ->
-# rag_text_corpus -> Create -> Vector Search Index). Safe to rerun: catches
-# the "already exists" error instead of checking first, since the exact
-# shape of list_endpoints()/list_indexes() responses isn't worth depending
-# on here.
-#
-# Note on naming: the workspace UI already shows "AI Search endpoint" and
-# MCP URLs under /api/2.0/mcp/ai-search/..., which suggests Databricks is
-# mid-rename from "Vector Search" to "AI Search". This script targets the
-# long-established `databricks-vectorsearch` package (`VectorSearchClient`),
-# which is what actually built rag_text_corpus_index. If your workspace has
-# moved to a newer `databricks-ai-search` package, the class is
-# `AISearchClient` and the method names below are unchanged.
+# DBTITLE 1,Overview
+# Creates, repairs or syncs the vector search endpoint and index; safe to rerun.
 
 # COMMAND ----------
 
@@ -49,8 +37,7 @@ except Exception as e:
 
 # DBTITLE 1,Create or repair the index
 def describe_index():
-    # None when the index is unusable, e.g. its endpoint was recreated
-    # under the same name with a new id, which orphans the index.
+    # None when unusable, e.g. a recreated endpoint (same name, new id) orphans the index.
     try:
         return vsc.get_index(ENDPOINT_NAME, INDEX_NAME).describe()
     except Exception:
@@ -98,22 +85,27 @@ else:
 
 # COMMAND ----------
 
+# DBTITLE 1,Wait for the sync to reach the latest corpus
 import time
-from databricks.vector_search.exceptions import BadRequest
 
-TIMEOUT_MIN = 20
+TIMEOUT_MIN = 30
+# Ready alone is not enough: a stale index still answers queries, so wait for the newest data commit.
+target = spark.sql(f"DESCRIBE HISTORY {SOURCE_TABLE}").filter("operation != 'SET TBLPROPERTIES'").agg({"version": "max"}).first()[0]
 idx = vsc.get_index(ENDPOINT_NAME, INDEX_NAME)
 deadline = time.time() + TIMEOUT_MIN * 60
+last = None
 while True:
-    try:
-        idx.similarity_search(query_text="test", columns=["doc_id"],
-                              num_results=1, query_type="HYBRID")
+    st = idx.describe().get("status", {})
+    done = (st.get("triggered_update_status") or {}).get("last_processed_commit_version", -1)
+    if (st.get("detailed_state"), done) != last:
+        last = (st.get("detailed_state"), done)
+        print(f"state={last[0]} processed_version={done} target_version={target}")
+    if st.get("ready") and done >= target:
         break
-    except BadRequest as e:
-        if time.time() > deadline:
-            raise TimeoutError(f"index not ready after {TIMEOUT_MIN} min: {e}")
-        time.sleep(15)
-print("Index ready.")
+    if time.time() > deadline:
+        raise TimeoutError(f"index at version {done}, not {target}, after {TIMEOUT_MIN} min")
+    time.sleep(30)
+print(f"Index synced to version {done}: {st.get('indexed_row_count')} rows.")
 
 # COMMAND ----------
 

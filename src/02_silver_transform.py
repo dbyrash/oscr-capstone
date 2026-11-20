@@ -26,7 +26,6 @@ from pyspark.sql.window import Window
 from pyspark.sql.functions import row_number, col, row_number, to_date, from_unixtime
 
 bronze_df = spark.table("bootcamp_students.oscr_bronze.finnhub_company_news") 
-# bronze_df.show() 
 
 window = Window.partitionBy("id").orderBy(col("_ingested_at").desc())
 

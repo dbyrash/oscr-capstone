@@ -52,7 +52,7 @@ graded AS (
 grid AS (
   SELECT source, model
   FROM VALUES ('backfill'), ('live') AS t(source)
-  CROSS JOIN VALUES ('agent_rag'), ('agent_no_rag'), ('always_hold'), ('always_rise'), ('persistence'), ('random') AS m(model)
+  CROSS JOIN VALUES ('agent_rag'), ('agent_no_rag'), ('agent_no_rag_big'), ('always_hold'), ('always_rise'), ('persistence'), ('random') AS m(model)
 ),
 agg AS (SELECT source, model, COUNT(*) AS n, SUM(hit) AS hits FROM graded GROUP BY 1, 2),
 skips AS (
