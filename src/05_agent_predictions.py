@@ -6,6 +6,7 @@
 #   "databricks-vectorsearch",
 # ]
 # ///
+# DBTITLE 1,Agent overview
 # The agent: retrieves grounded context from rag_text_corpus_index,
 # combines it with the structured gold signals, asks an LLM for a concrete
 # rise/hold/fall call on a brand's near-term app-store popularity, and writes
@@ -19,10 +20,8 @@
 # backfill_start widget to replay the agent weekly across history, which fills
 # the prediction_scorecard with real hit-rates today instead of a week from now.
 #
-# Backfill honesty: popularity signals are as-of correct (snapshot_date <=
-# as_of_date). Analyst sentiment, forward estimates, and the retrieved
-# review/news text use the latest available snapshot -- a known backtest
-# limitation, documented rather than hidden.
+# No look-ahead: popularity, sentiment, estimates and retrieved text are all
+# limited to rows dated on or before as_of_date.
 
 # COMMAND ----------
 
@@ -31,6 +30,7 @@
 
 # COMMAND ----------
 
+# DBTITLE 1,Imports and constants
 import json
 from datetime import date, datetime, timedelta
 
@@ -49,11 +49,10 @@ PREDICTIONS_TABLE = f"{GOLD}.predictions"
 LLM_ENDPOINT = "databricks-meta-llama-3-1-8b-instruct"
 
 SYMBOLS = ["NFLX", "DIS"]
-# Disney's apps all roll up to one "Disney+" brand, matching the dashboard.
 BRAND_OF = {"NFLX": "Netflix", "DIS": "Disney+"}
 NAMES_OF = {
     "Netflix": ["Netflix"],
-    "Disney+": ["Disney+", "Disney Plus", "Hotstar", "JioHotstar"],
+    "Disney+": ["Disney+"],  # flagship only; JioHotstar is a separate India product
 }
 
 vsc = VectorSearchClient()
@@ -85,12 +84,14 @@ CREATE TABLE IF NOT EXISTS {PREDICTIONS_TABLE} (
 
 # COMMAND ----------
 
-def retrieve_context(symbol, num_results=5):
+# DBTITLE 1,Retrieval, signals and prompt
+def retrieve_context(symbol, as_of, num_results=5):
     results = index.similarity_search(
         query_text=f"viewer and analyst sentiment toward {symbol}",
         columns=["doc_id", "text_content"],
         num_results=num_results,
         query_type="HYBRID",
+        filters={"published_date <=": str(as_of)},
     )
     cols = [c["name"] for c in results["manifest"]["columns"]]
     rows = results["result"]["data_array"]
@@ -111,14 +112,16 @@ def structured_signals(symbol, as_of):
         ORDER BY snapshot_date DESC
         LIMIT 7
     """).collect()
-    # Sentiment / estimates use latest available snapshot (documented caveat).
     sentiment = spark.sql(f"""
         SELECT * FROM {GOLD}.symbol_analyst_sentiment
-        WHERE symbol = '{symbol}' ORDER BY period DESC LIMIT 1
+        WHERE symbol = '{symbol}' AND to_date(period) <= DATE('{as_of}')
+        ORDER BY period DESC LIMIT 1
     """).collect()
+    # Estimates carry no publish date, so ingestion time is the as-of guard.
     estimates = spark.sql(f"""
         SELECT * FROM {GOLD}.symbol_forward_estimates
-        WHERE symbol = '{symbol}' ORDER BY date DESC LIMIT 1
+        WHERE symbol = '{symbol}' AND _ingested_at < date_add(DATE('{as_of}'), 1)
+        ORDER BY date DESC LIMIT 1
     """).collect()
     return {
         "brand": brand,
@@ -152,6 +155,10 @@ strict JSON only, no other text:
 
 # COMMAND ----------
 
+# DBTITLE 1,LLM call and parsing
+import re
+
+
 def call_llm(prompt):
     response = llm.predict(
         endpoint=LLM_ENDPOINT,
@@ -160,27 +167,56 @@ def call_llm(prompt):
     return response["choices"][0]["message"]["content"]
 
 
+VALID_CALLS = {"rise", "hold", "fall"}
+
+
 def parse_call(raw_text):
-    try:
-        return json.loads(raw_text)
-    except (json.JSONDecodeError, TypeError):
-        return {"call": "unknown", "confidence": "low", "reasoning": raw_text}
+    """Return the first {...} JSON block with a valid call, or None."""
+    if not isinstance(raw_text, str):
+        return None
+    for pattern in (r"\{.*?\}", r"\{.*\}"):
+        match = re.search(pattern, raw_text, re.DOTALL)
+        if not match:
+            continue
+        try:
+            obj = json.loads(match.group(0))
+        except json.JSONDecodeError:
+            continue
+        call = str(obj.get("call", "")).strip().lower()
+        if call in VALID_CALLS:
+            obj["call"] = call
+            return obj
+    return None
+
+
+def get_call(prompt, attempts=2):
+    """Ask the LLM, retrying once if the reply does not parse."""
+    for _ in range(attempts):
+        parsed = parse_call(call_llm(prompt))
+        if parsed:
+            return parsed
+    return None
 
 # COMMAND ----------
 
+# DBTITLE 1,Run agent and write predictions
 def run_for_date(as_of):
     """Generate one prediction per symbol for a single as-of date and write
-    them idempotently: clear that date's rows, then insert. Re-running a date
-    replaces it rather than duplicating."""
+    them idempotently: delete each (symbol, prediction_date), then insert.
+    Unparseable replies are skipped, never written as 'unknown'."""
     rows = []
     for symbol in SYMBOLS:
-        chunks = retrieve_context(symbol)
+        chunks = retrieve_context(symbol, as_of)
         signals = structured_signals(symbol, as_of)
-        parsed = parse_call(call_llm(build_prompt(symbol, signals, chunks)))
+        parsed = get_call(build_prompt(symbol, signals, chunks))
+        if parsed is None:
+            SKIPPED.append((as_of, symbol))
+            print(f"{as_of} {symbol}: SKIPPED (unparseable after retry)")
+            continue
         rows.append({
             "symbol": symbol,
             "prediction_date": as_of,
-            "call": parsed.get("call", "unknown"),
+            "call": parsed["call"],
             "confidence": parsed.get("confidence", "low"),
             "reasoning": parsed.get("reasoning", ""),
             "retrieved_doc_ids": [c["doc_id"] for c in chunks],
@@ -188,11 +224,14 @@ def run_for_date(as_of):
         })
         print(f"{as_of} {symbol}: {parsed.get('call')} ({parsed.get('confidence')})")
 
+    if not rows:
+        return
     df = (spark.createDataFrame(rows)
-          .withColumn("prediction_date", spark.createDataFrame(rows).prediction_date.cast("date"))
           .withColumn("created_at", current_timestamp()))
     df = df.withColumn("prediction_date", df["prediction_date"].cast("date"))
-    spark.sql(f"DELETE FROM {PREDICTIONS_TABLE} WHERE prediction_date = DATE('{as_of}')")
+    symbols = ", ".join(f"'{r['symbol']}'" for r in rows)
+    spark.sql(f"""DELETE FROM {PREDICTIONS_TABLE}
+                  WHERE prediction_date = DATE('{as_of}') AND symbol IN ({symbols})""")
     df.write.format("delta").mode("append").saveAsTable(PREDICTIONS_TABLE)
 
 
@@ -210,8 +249,10 @@ if backfill_start:
 else:
     dates = [end.isoformat()]
 
+SKIPPED = []
 print(f"Running agent for {len(dates)} date(s): {dates}")
 for ds in dates:
     run_for_date(ds)
+print(f"Skipped (unparseable): {len(SKIPPED)} {SKIPPED}")
 
 spark.table(PREDICTIONS_TABLE).orderBy("created_at", ascending=False).show(truncate=False)

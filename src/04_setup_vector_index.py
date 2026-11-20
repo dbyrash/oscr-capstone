@@ -20,6 +20,11 @@
 
 # COMMAND ----------
 
+# MAGIC %pip install databricks-vectorsearch
+# MAGIC dbutils.library.restartPython()
+
+# COMMAND ----------
+
 # DBTITLE 1,Configure Vector Search client
 from databricks.vector_search.client import VectorSearchClient
 
@@ -42,49 +47,76 @@ except Exception as e:
 
 # COMMAND ----------
 
-try:
-    vsc.create_delta_sync_index(
-        endpoint_name=ENDPOINT_NAME,
-        source_table_name=SOURCE_TABLE,
-        index_name=INDEX_NAME,
-        pipeline_type="TRIGGERED",
-        primary_key="doc_id",
-        embedding_source_column="text_content",
-        embedding_model_endpoint_name=EMBEDDING_MODEL_ENDPOINT,
-    )
-    print(f"Created index {INDEX_NAME}")
-except Exception as e:
-    print(f"Index {INDEX_NAME} probably already exists ({e}); triggering a sync instead.")
-    vsc.get_index(ENDPOINT_NAME, INDEX_NAME).sync()
+# DBTITLE 1,Create or repair the index
+def describe_index():
+    # None when the index is unusable, e.g. its endpoint was recreated
+    # under the same name with a new id, which orphans the index.
+    try:
+        return vsc.get_index(ENDPOINT_NAME, INDEX_NAME).describe()
+    except Exception:
+        return None
+
+
+import time
+
+if describe_index() is None:
+    try:
+        vsc.delete_index(ENDPOINT_NAME, INDEX_NAME)
+        print(f"Dropped stale index {INDEX_NAME}")
+    except Exception as e:
+        print(f"Drop attempt failed ({e}); creating anyway")
+
+for attempt in range(60):
+    try:
+        vsc.create_delta_sync_index(
+            endpoint_name=ENDPOINT_NAME,
+            source_table_name=SOURCE_TABLE,
+            index_name=INDEX_NAME,
+            pipeline_type="TRIGGERED",
+            primary_key="doc_id",
+            embedding_source_column="text_content",
+            embedding_model_endpoint_name=EMBEDDING_MODEL_ENDPOINT,
+        )
+        print(f"Created index {INDEX_NAME}")
+        break
+    except Exception as e:
+        if describe_index() is not None:
+            print(f"Index {INDEX_NAME} exists ({e}); triggering a sync.")
+            try:
+                vsc.get_index(ENDPOINT_NAME, INDEX_NAME).sync()
+            except Exception as se:
+                print(f"Sync skipped, index still provisioning: {se}")
+            break
+        if "pending deletion" in str(e):
+            print(f"Old index still deleting (attempt {attempt + 1}); waiting.")
+            time.sleep(10)
+            continue
+        raise
+else:
+    raise TimeoutError("index deletion never completed")
+
+
+# COMMAND ----------
+
+import time
+from databricks.vector_search.exceptions import BadRequest
+
+TIMEOUT_MIN = 20
+idx = vsc.get_index(ENDPOINT_NAME, INDEX_NAME)
+deadline = time.time() + TIMEOUT_MIN * 60
+while True:
+    try:
+        idx.similarity_search(query_text="test", columns=["doc_id"],
+                              num_results=1, query_type="HYBRID")
+        break
+    except BadRequest as e:
+        if time.time() > deadline:
+            raise TimeoutError(f"index not ready after {TIMEOUT_MIN} min: {e}")
+        time.sleep(15)
+print("Index ready.")
 
 # COMMAND ----------
 
 import json
 status = vsc.get_index(ENDPOINT_NAME, INDEX_NAME).describe().get("status", {})
 print(json.dumps(status, indent=2, default=str))
-
-# COMMAND ----------
-
-# DBTITLE 1,Wait for index and run sample query
-# Sanity check: confirm the index is queryable before anything downstream
-# (the agent notebook) depends on it.
-from databricks.vector_search.exceptions import BadRequest
-
-index = vsc.get_index(ENDPOINT_NAME, INDEX_NAME)
-while True:
-    try:
-        index.similarity_search(query_text="test", columns=["doc_id"], num_results=1, query_type="HYBRID")
-        break
-    except BadRequest:
-        import time
-        time.sleep(5)
-    import time
-    time.sleep(5)
-    index = vsc.get_index(ENDPOINT_NAME, INDEX_NAME)
-sample = index.similarity_search(
-    query_text="viewer reaction to a show",
-    columns=["doc_id", "text_content"],
-    num_results=1,
-    query_type="HYBRID",
-)
-print(sample)
