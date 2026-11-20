@@ -27,12 +27,51 @@ def assert_no_duplicate_keys(table_name, key_columns):
     print(f"[PASS] {table_name}: no duplicates on {key_columns}")
 
 
+FRESHNESS_HOURS = 36
+
+# (table, filter): _fetched_at comes from the API call, unlike _ingested_at,
+# which bronze resets on every run even when the fetch failed.
+FRESHNESS_SOURCES = [
+    ("bootcamp_students.oscr_bronze.finnhub_company_news", None),
+    ("bootcamp_students.oscr_bronze.finnhub_recommendation_trends", None),
+    ("bootcamp_students.oscr_bronze.fmp_analyst_estimates", None),
+    ("bootcamp_students.oscr_bronze.tmdb_reviews", None),
+    ("bootcamp_students.oscr_bronze.tmdb_trending_shows", None),
+    ("bootcamp_students.oscr_bronze.tmdb_watch_providers", None),
+    ("bootcamp_students.oscr_bronze.appstore_top_free", "_storefront = 'us'"),
+]
+
+
+def assert_fresh(sources, max_hours=FRESHNESS_HOURS):
+    """Check every source, then fail once listing all stale ones."""
+    stale = []
+    for table, where in sources:
+        row = spark.sql(f"""
+            SELECT CAST(MAX(_fetched_at) AS STRING) AS newest,
+                   (unix_timestamp(current_timestamp()) - unix_timestamp(MAX(_fetched_at))) / 3600 AS age_h
+            FROM {table} {'WHERE ' + where if where else ''}
+        """).collect()[0]
+        label = f"{table}{' [' + where + ']' if where else ''}"
+        if row.newest is None or row.age_h > max_hours:
+            age = "never" if row.newest is None else f"{row.age_h:.1f}h ago"
+            stale.append(f"{label}: newest _fetched_at {row.newest} ({age})")
+            print(f"[FAIL] {label}: newest _fetched_at {row.newest} ({age})")
+        else:
+            print(f"[PASS] {label}: newest _fetched_at {row.newest} ({row.age_h:.1f}h ago)")
+    assert not stale, f"{len(stale)} source(s) older than {max_hours}h: " + "; ".join(stale)
+
+
 def check_bronze():
     assert_row_count("bootcamp_students.oscr_bronze.finnhub_recommendation_trends")
     assert_no_nulls("bootcamp_students.oscr_bronze.finnhub_recommendation_trends", ["symbol", "period"])
 
     assert_row_count("bootcamp_students.oscr_bronze.appstore_top_free")
     assert_no_duplicate_keys("bootcamp_students.oscr_bronze.appstore_top_free", ["id", "_storefront", "_ingested_at"])
+
+    assert_row_count("bootcamp_students.oscr_bronze.tmdb_trending_shows")
+    assert_row_count("bootcamp_students.oscr_bronze.tmdb_reviews")
+
+    assert_fresh(FRESHNESS_SOURCES)
 
 
 def check_silver():

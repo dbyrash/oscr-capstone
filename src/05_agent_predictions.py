@@ -43,6 +43,8 @@ GOLD = f"{CATALOG}.oscr_gold"
 ENDPOINT_NAME = "oscr-rag-endpoint"
 INDEX_NAME = f"{GOLD}.rag_text_corpus_index"
 PREDICTIONS_TABLE = f"{GOLD}.predictions"
+SKIPS_TABLE = f"{GOLD}.prediction_skips"
+KEY = ["symbol", "prediction_date", "source", "variant"]
 
 # Confirm the exact serving endpoint name in your workspace under Serving in
 # the sidebar; Foundation Model API endpoint names vary by workspace/region.
@@ -50,10 +52,6 @@ LLM_ENDPOINT = "databricks-meta-llama-3-1-8b-instruct"
 
 SYMBOLS = ["NFLX", "DIS"]
 BRAND_OF = {"NFLX": "Netflix", "DIS": "Disney+"}
-NAMES_OF = {
-    "Netflix": ["Netflix"],
-    "Disney+": ["Disney+"],  # flagship only; JioHotstar is a separate India product
-}
 
 vsc = VectorSearchClient()
 index = vsc.get_index(ENDPOINT_NAME, INDEX_NAME)
@@ -61,18 +59,21 @@ llm = mlflow.deployments.get_deploy_client("databricks")
 
 # COMMAND ----------
 
-# Parameters. The scheduled job passes none, so it runs a single idempotent
-# prediction for today. For a historical backtest, set backfill_start.
+# DBTITLE 1,Parameters
+# The scheduled job passes nothing: one live run for today, both variants.
 dbutils.widgets.text("as_of_date", date.today().isoformat())
-dbutils.widgets.text("backfill_start", "")          # e.g. 2026-08-25 (empty = just as_of_date)
-dbutils.widgets.text("backfill_step_days", "7")     # weekly, to match the 7-day scoring horizon
+dbutils.widgets.text("backfill_start", "")  # set to backfill every scorable date from here to as_of_date
+dbutils.widgets.text("use_rag", "")         # empty = mode default; "true"/"false" = one variant (live only)
 
 # COMMAND ----------
 
+# DBTITLE 1,Tables and frozen cutoffs
 spark.sql(f"""
 CREATE TABLE IF NOT EXISTS {PREDICTIONS_TABLE} (
   symbol STRING,
   prediction_date DATE,
+  source STRING,
+  variant STRING,
   call STRING,
   confidence STRING,
   reasoning STRING,
@@ -81,6 +82,22 @@ CREATE TABLE IF NOT EXISTS {PREDICTIONS_TABLE} (
   created_at TIMESTAMP
 ) USING DELTA
 """)
+if "source" not in spark.table(PREDICTIONS_TABLE).columns:
+    spark.sql(f"ALTER TABLE {PREDICTIONS_TABLE} ADD COLUMNS (source STRING, variant STRING)")
+
+spark.sql(f"""
+CREATE TABLE IF NOT EXISTS {SKIPS_TABLE} (
+  symbol STRING,
+  prediction_date DATE,
+  source STRING,
+  variant STRING,
+  created_at TIMESTAMP
+) USING DELTA
+""")
+
+# Frozen by src/ddl_move_definition.sql; 06 scores with the same row.
+CUTOFFS = spark.table(f"{GOLD}.move_cutoffs").first()
+print(f"cutoffs: fall < {CUTOFFS.fall_below:.2f}, rise > {CUTOFFS.rise_above:.2f}, horizon {CUTOFFS.horizon_days}d")
 
 # COMMAND ----------
 
@@ -100,16 +117,12 @@ def retrieve_context(symbol, as_of, num_results=5):
 
 def structured_signals(symbol, as_of):
     brand = BRAND_OF.get(symbol, symbol)
-    names = NAMES_OF.get(brand, [brand])
-    in_list = ", ".join(f"'{n}'" for n in names)
-    # Popularity is as-of correct: only snapshots on or before as_of, newest 7.
+    # Same popularity view 06 scores against; newest 7 snapshots on or before as_of.
     popularity = spark.sql(f"""
-        SELECT snapshot_date, ROUND(AVG(101 - rank), 1) AS popularity_score
-        FROM {GOLD}.app_rank_history
-        WHERE name IN ({in_list})
-          AND snapshot_date <= DATE('{as_of}')
-        GROUP BY snapshot_date
-        ORDER BY snapshot_date DESC
+        SELECT d AS snapshot_date, popularity AS popularity_score
+        FROM {GOLD}.brand_popularity
+        WHERE brand = '{brand}' AND d <= DATE('{as_of}')
+        ORDER BY d DESC
         LIMIT 7
     """).collect()
     sentiment = spark.sql(f"""
@@ -126,7 +139,8 @@ def structured_signals(symbol, as_of):
     return {
         "brand": brand,
         "as_of_date": str(as_of),
-        "recent_popularity": [r.asDict() for r in popularity],
+        # Oldest first: the model read a newest-first list as chronological and inverted every trend.
+        "recent_popularity_oldest_to_newest": [r.asDict() for r in reversed(popularity)],
         "sentiment": sentiment[0].asDict() if sentiment else None,
         "estimates": estimates[0].asDict() if estimates else None,
     }
@@ -137,20 +151,26 @@ def build_prompt(symbol, signals, chunks):
     context_text = "\n\n".join(
         f"[{c['doc_id']}] {c['text_content'][:500]}" for c in chunks
     )
+    as_of = signals["as_of_date"]
+    h = CUTOFFS.horizon_days
+    retrieved = (f"\nRetrieved viewer reviews and news:\n{context_text}\n\n"
+                 "Ground your explanation in the retrieved text where you can.") if chunks else ""
     return f"""You are assessing the near-term popularity trajectory of {brand}
-on streaming, using only the signals below. Call whether {brand}'s app-store
-popularity is likely to RISE, HOLD, or FALL next period, and explain why.
+on streaming, using only the signals below.
 
-Structured signals (recent app-store popularity trend, analyst sentiment,
-revenue/EPS estimates):
+Definitions (fixed):
+- popularity_score = 101 - rank of the {brand} app in the US App Store top-free chart (higher is better).
+- change = popularity_score {h} days after {as_of} minus popularity_score on {as_of}.
+- RISE if change > {CUTOFFS.rise_above:.2f}; FALL if change < {CUTOFFS.fall_below:.2f}; HOLD otherwise.
+
+Call RISE, HOLD, or FALL for {brand} over the next {h} days, and explain why.
+
+Structured signals (recent popularity_score by snapshot_date, listed oldest to newest;
+analyst sentiment; revenue/EPS estimates):
 {json.dumps(signals, default=str, indent=2)}
-
-Retrieved viewer reviews and news:
-{context_text}
-
-Ground your explanation in the retrieved text where you can. Respond with
-strict JSON only, no other text:
-{{"call": "rise" | "hold" | "fall", "confidence": "low" | "medium" | "high", "reasoning": "one or two sentences, citing the specific signals and retrieved text that drove the call"}}
+{retrieved}
+Respond with strict JSON only, no other text:
+{{"call": "rise" | "hold" | "fall", "confidence": "low" | "medium" | "high", "reasoning": "one or two sentences, citing the specific evidence that drove the call"}}
 """
 
 # COMMAND ----------
@@ -162,7 +182,7 @@ import re
 def call_llm(prompt):
     response = llm.predict(
         endpoint=LLM_ENDPOINT,
-        inputs={"messages": [{"role": "user", "content": prompt}], "max_tokens": 300},
+        inputs={"messages": [{"role": "user", "content": prompt}], "max_tokens": 300, "temperature": 0},
     )
     return response["choices"][0]["message"]["content"]
 
@@ -200,59 +220,79 @@ def get_call(prompt, attempts=2):
 # COMMAND ----------
 
 # DBTITLE 1,Run agent and write predictions
-def run_for_date(as_of):
-    """Generate one prediction per symbol for a single as-of date and write
-    them idempotently: delete each (symbol, prediction_date), then insert.
-    Unparseable replies are skipped, never written as 'unknown'."""
-    rows = []
-    for symbol in SYMBOLS:
-        chunks = retrieve_context(symbol, as_of)
-        signals = structured_signals(symbol, as_of)
-        parsed = get_call(build_prompt(symbol, signals, chunks))
-        if parsed is None:
-            SKIPPED.append((as_of, symbol))
-            print(f"{as_of} {symbol}: SKIPPED (unparseable after retry)")
-            continue
-        rows.append({
-            "symbol": symbol,
-            "prediction_date": as_of,
-            "call": parsed["call"],
-            "confidence": parsed.get("confidence", "low"),
-            "reasoning": parsed.get("reasoning", ""),
-            "retrieved_doc_ids": [c["doc_id"] for c in chunks],
-            "model_endpoint": LLM_ENDPOINT,
-        })
-        print(f"{as_of} {symbol}: {parsed.get('call')} ({parsed.get('confidence')})")
+from delta.tables import DeltaTable
 
-    if not rows:
-        return
-    df = (spark.createDataFrame(rows)
-          .withColumn("created_at", current_timestamp()))
-    df = df.withColumn("prediction_date", df["prediction_date"].cast("date"))
-    symbols = ", ".join(f"'{r['symbol']}'" for r in rows)
-    spark.sql(f"""DELETE FROM {PREDICTIONS_TABLE}
-                  WHERE prediction_date = DATE('{as_of}') AND symbol IN ({symbols})""")
-    df.write.format("delta").mode("append").saveAsTable(PREDICTIONS_TABLE)
+PRED_SCHEMA = ("symbol STRING, prediction_date DATE, source STRING, variant STRING, call STRING, "
+               "confidence STRING, reasoning STRING, retrieved_doc_ids ARRAY<STRING>, model_endpoint STRING")
+KEY_SCHEMA = "symbol STRING, prediction_date DATE, source STRING, variant STRING"
+ON = " AND ".join(f"t.{k} = s.{k}" for k in KEY)
 
 
-# Build the list of dates to run: a single as-of date, or a weekly backfill.
+def scorable_dates(brand, start, end):
+    """Dates with a snapshot and another exactly horizon_days later, so every backfill row can be scored."""
+    rows = spark.sql(f"""
+        SELECT a.d FROM {GOLD}.brand_popularity a
+        JOIN {GOLD}.brand_popularity b ON b.brand = a.brand AND b.d = date_add(a.d, {CUTOFFS.horizon_days})
+        WHERE a.brand = '{brand}' AND a.d BETWEEN DATE('{start}') AND DATE('{end}')
+        ORDER BY a.d
+    """).collect()
+    return [r.d.isoformat() for r in rows]
+
+
+def predict(symbol, as_of, source, use_rag):
+    """Return (row, key); row is None when the reply never parsed."""
+    key = {"symbol": symbol, "prediction_date": date.fromisoformat(as_of),
+           "source": source, "variant": "rag" if use_rag else "no_rag"}
+    chunks = retrieve_context(symbol, as_of) if use_rag else []
+    parsed = get_call(build_prompt(symbol, structured_signals(symbol, as_of), chunks))
+    if parsed is None:
+        print(f"{as_of} {symbol} {key['variant']}: SKIPPED (unparseable after retry)")
+        return None, key
+    print(f"{as_of} {symbol} {key['variant']}: {parsed['call']} ({parsed.get('confidence')})")
+    return {**key, "call": parsed["call"], "confidence": parsed.get("confidence", "low"),
+            "reasoning": parsed.get("reasoning", ""), "retrieved_doc_ids": [c["doc_id"] for c in chunks],
+            "model_endpoint": LLM_ENDPOINT}, key
+
+
+def write_results(done, skipped):
+    """Upsert on KEY; each key ends up in exactly one of predictions or prediction_skips."""
+    preds, skips = DeltaTable.forName(spark, PREDICTIONS_TABLE), DeltaTable.forName(spark, SKIPS_TABLE)
+    if done:
+        df = spark.createDataFrame(done, PRED_SCHEMA).withColumn("created_at", current_timestamp())
+        preds.alias("t").merge(df.alias("s"), ON).whenMatchedUpdateAll().whenNotMatchedInsertAll().execute()
+        skips.alias("t").merge(df.select(*KEY).alias("s"), ON).whenMatchedDelete().execute()
+    if skipped:
+        df = spark.createDataFrame(skipped, KEY_SCHEMA).withColumn("created_at", current_timestamp())
+        skips.alias("t").merge(df.alias("s"), ON).whenMatchedUpdateAll().whenNotMatchedInsertAll().execute()
+        preds.alias("t").merge(df.select(*KEY).alias("s"), ON).whenMatchedDelete().execute()
+
+
 as_of_date = dbutils.widgets.get("as_of_date") or date.today().isoformat()
 backfill_start = dbutils.widgets.get("backfill_start").strip()
-step = int(dbutils.widgets.get("backfill_step_days") or "7")
+use_rag_flag = dbutils.widgets.get("use_rag").strip().lower()
+if use_rag_flag not in ("", "true", "false"):
+    raise ValueError(f"use_rag must be empty, true or false, got {use_rag_flag!r}")
 
-end = datetime.fromisoformat(as_of_date).date()
 if backfill_start:
-    d, dates = datetime.fromisoformat(backfill_start).date(), []
-    while d <= end:
-        dates.append(d.isoformat())
-        d += timedelta(days=step)
+    # No news exists before 11-10, so a backfill only runs the no-RAG variant.
+    if use_rag_flag == "true":
+        raise ValueError("Backfill runs no_rag only; leave use_rag empty or set it to false")
+    source, variants = "backfill", [False]
+    pairs = [(s, d) for s in SYMBOLS for d in scorable_dates(BRAND_OF[s], backfill_start, as_of_date)]
 else:
-    dates = [end.isoformat()]
+    source = "live"
+    variants = {"": [True, False], "true": [True], "false": [False]}[use_rag_flag]
+    pairs = [(s, as_of_date) for s in SYMBOLS]
 
-SKIPPED = []
-print(f"Running agent for {len(dates)} date(s): {dates}")
-for ds in dates:
-    run_for_date(ds)
-print(f"Skipped (unparseable): {len(SKIPPED)} {SKIPPED}")
-
-spark.table(PREDICTIONS_TABLE).orderBy("created_at", ascending=False).show(truncate=False)
+print(f"{source}: {len(pairs)} symbol-date pair(s) x {len(variants)} variant(s)")
+done, skipped = [], []
+for symbol, d in pairs:
+    for use_rag in variants:
+        row, key = predict(symbol, d, source, use_rag)
+        if row:
+            done.append(row)
+        else:
+            skipped.append(key)
+write_results(done, skipped)
+print(f"written: {len(done)} | skipped (unparseable): {len(skipped)} "
+      f"{[(k['symbol'], str(k['prediction_date']), k['variant']) for k in skipped]}")

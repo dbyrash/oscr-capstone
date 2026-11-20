@@ -1,4 +1,5 @@
 # Databricks notebook source
+# DBTITLE 1,Silver recommendation trends
 from pyspark.sql.window import Window
 from pyspark.sql.functions import row_number, col 
 
@@ -14,12 +15,13 @@ silver_df = (
     .drop("_rn")
 )
 
-silver_df.write.format("delta").mode("overwrite").saveAsTable("bootcamp_students.oscr_silver.finnhub_recommendation_trends")
+silver_df.write.format("delta").mode("overwrite").option("overwriteSchema", "true").saveAsTable("bootcamp_students.oscr_silver.finnhub_recommendation_trends")
 
 spark.table("bootcamp_students.oscr_silver.finnhub_recommendation_trends").show()
 
 # COMMAND ----------
 
+# DBTITLE 1,Silver company news
 from pyspark.sql.window import Window
 from pyspark.sql.functions import row_number, col, row_number, to_date, from_unixtime
 
@@ -36,7 +38,7 @@ silver_df = (bronze_df
     .drop("datetime") 
 )
 
-silver_df.write.format("delta").mode("overwrite").saveAsTable("bootcamp_students.oscr_silver.finnhub_company_news")
+silver_df.write.format("delta").mode("overwrite").option("overwriteSchema", "true").saveAsTable("bootcamp_students.oscr_silver.finnhub_company_news")
                                                               
 spark.table("bootcamp_students.oscr_silver.finnhub_company_news").show()
 
@@ -44,6 +46,7 @@ spark.table("bootcamp_students.oscr_silver.finnhub_company_news").show()
 
 # COMMAND ----------
 
+# DBTITLE 1,Silver FMP estimates
 from pyspark.sql.window import Window
 from pyspark.sql.functions import row_number, col, to_date
 
@@ -59,11 +62,12 @@ silver_df = (
     .withColumn("date", to_date(col("date")))
 )
 
-silver_df.write.format("delta").mode("overwrite").saveAsTable("bootcamp_students.oscr_silver.fmp_analyst_estimates")
+silver_df.write.format("delta").mode("overwrite").option("overwriteSchema", "true").saveAsTable("bootcamp_students.oscr_silver.fmp_analyst_estimates")
 spark.table("bootcamp_students.oscr_silver.fmp_analyst_estimates").show()
 
 # COMMAND ----------
 
+# DBTITLE 1,Silver trending shows
 from pyspark.sql.window import Window
 from pyspark.sql.functions import row_number, col
 
@@ -78,11 +82,12 @@ silver_df = (
     .drop("_rn")
 )
 
-silver_df.write.format("delta").mode("overwrite").saveAsTable("bootcamp_students.oscr_silver.tmdb_trending_shows")
+silver_df.write.format("delta").mode("overwrite").option("overwriteSchema", "true").saveAsTable("bootcamp_students.oscr_silver.tmdb_trending_shows")
 spark.table("bootcamp_students.oscr_silver.tmdb_trending_shows").show()
 
 # COMMAND ----------
 
+# DBTITLE 1,Silver TMDB reviews
 from pyspark.sql.window import Window
 from pyspark.sql.functions import row_number, col
 
@@ -105,11 +110,12 @@ show_names = (
 
 silver_df = reviews_deduped.join(show_names, reviews_deduped["_show_id"] == show_names["show_id"], "left").drop("show_id")
 
-silver_df.write.format("delta").mode("overwrite").saveAsTable("bootcamp_students.oscr_silver.tmdb_reviews")
+silver_df.write.format("delta").mode("overwrite").option("overwriteSchema", "true").saveAsTable("bootcamp_students.oscr_silver.tmdb_reviews")
 spark.table("bootcamp_students.oscr_silver.tmdb_reviews").show()
 
 # COMMAND ----------
 
+# DBTITLE 1,Silver watch providers
 from pyspark.sql.window import Window
 from pyspark.sql.functions import row_number, col
 
@@ -125,12 +131,13 @@ silver_df = (
     .drop("_rn")
 )
 
-silver_df.write.format("delta").mode("overwrite").saveAsTable("bootcamp_students.oscr_silver.tmdb_watch_providers")
+silver_df.write.format("delta").mode("overwrite").option("overwriteSchema", "true").saveAsTable("bootcamp_students.oscr_silver.tmdb_watch_providers")
 spark.table("bootcamp_students.oscr_silver.tmdb_watch_providers").show()
 
 
 # COMMAND ----------
 
+# DBTITLE 1,Silver App Store merge
 from pyspark.sql.window import Window
 from pyspark.sql.functions import row_number, col, to_date, max as spark_max
 from delta.tables import DeltaTable
@@ -158,7 +165,8 @@ brand_aliases = spark.createDataFrame(
     ["brand", "name"],
 )
 
-silver_df = deduped.join(brand_aliases, on="name", how="left")
+# The MERGE target has no _fetched_at column; freshness is checked in bronze.
+silver_df = deduped.join(brand_aliases, on="name", how="left").drop("_fetched_at")
 
 silver_tbl = DeltaTable.forName(spark, "bootcamp_students.oscr_silver.appstore_top_free")
 silver_tbl.alias("t").merge(
