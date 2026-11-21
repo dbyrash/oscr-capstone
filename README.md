@@ -1,3 +1,5 @@
+[![tests](https://github.com/dbyrash/oscr-capstone/actions/workflows/test.yml/badge.svg)](https://github.com/dbyrash/oscr-capstone/actions/workflows/test.yml)
+
 # OSCR (Online Streaming Content Radar)
 
 A self-grading pipeline that tests whether AI calls on streaming popularity beat simple baselines.

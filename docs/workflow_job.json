@@ -108,6 +108,18 @@
       "disabled": false
     },
     {
+      "task_key": "data_quality_check_predictions",
+      "depends_on": [{"task_key": "agent_predictions"}],
+      "run_if": "ALL_SUCCESS",
+      "spark_python_task": {"python_file": "/Workspace/Users/<YOUR_USER>/oscr-capstone/src/data_quality_checks.py", "parameters": ["--layer", "predictions"]},
+      "timeout_seconds": 0,
+      "email_notifications": {"on_failure": ["<ALERT_EMAIL>"]},
+      "notification_settings": {"no_alert_for_skipped_runs": false, "no_alert_for_canceled_runs": false, "alert_on_last_attempt": false},
+      "webhook_notifications": {},
+      "environment_key": "Default",
+      "disabled": false
+    },
+    {
       "task_key": "prediction_scorecard",
       "depends_on": [{"task_key": "agent_predictions"}],
       "run_if": "ALL_SUCCESS",

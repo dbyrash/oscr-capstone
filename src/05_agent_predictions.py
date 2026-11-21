@@ -164,7 +164,11 @@ Respond with strict JSON only, no other text:
 # COMMAND ----------
 
 # DBTITLE 1,LLM call and parsing
-import re
+import os
+import sys
+
+sys.path.append(os.getcwd())  # notebook cwd is src/, where oscr_utils.py lives
+from oscr_utils import VALID_CALLS, parse_call
 
 
 def call_llm(prompt):
@@ -173,28 +177,6 @@ def call_llm(prompt):
         inputs={"messages": [{"role": "user", "content": prompt}], "max_tokens": 300, "temperature": 0},
     )
     return response["choices"][0]["message"]["content"]
-
-
-VALID_CALLS = {"rise", "hold", "fall"}
-
-
-def parse_call(raw_text):
-    """Return the first {...} JSON block with a valid call, or None."""
-    if not isinstance(raw_text, str):
-        return None
-    for pattern in (r"\{.*?\}", r"\{.*\}"):
-        match = re.search(pattern, raw_text, re.DOTALL)
-        if not match:
-            continue
-        try:
-            obj = json.loads(match.group(0))
-        except json.JSONDecodeError:
-            continue
-        call = str(obj.get("call", "")).strip().lower()
-        if call in VALID_CALLS:
-            obj["call"] = call
-            return obj
-    return None
 
 
 def get_call(prompt, attempts=2):

@@ -97,7 +97,74 @@ def check_gold():
     assert_no_nulls("bootcamp_students.oscr_gold.show_engagement", ["review_count"])
 
 
-CHECKS = {"bronze": check_bronze, "silver": check_silver, "gold": check_gold}
+PREDICTIONS = "bootcamp_students.oscr_gold.predictions"
+PREDICTION_SKIPS = "bootcamp_students.oscr_gold.prediction_skips"
+VALID_CALLS = ("rise", "hold", "fall")
+
+
+def assert_calls_valid(table_name):
+    allowed = ", ".join(f"'{c}'" for c in VALID_CALLS)
+    bad = spark.sql(f"SELECT COUNT(*) AS n FROM {table_name} WHERE call NOT IN ({allowed})").first().n
+    assert bad == 0, f"{table_name}: {bad} rows with call outside {VALID_CALLS}"
+    print(f"[PASS] {table_name}: every call in {VALID_CALLS}")
+
+
+def assert_skip_rate(days=7, max_rate=0.20):
+    """Skips / (predictions + skips) by prediction_date over the last `days` days."""
+    since = f"prediction_date >= date_sub(current_date(), {days})"
+    preds = spark.sql(f"SELECT COUNT(*) AS n FROM {PREDICTIONS} WHERE {since}").first().n
+    skips = spark.sql(f"SELECT COUNT(*) AS n FROM {PREDICTION_SKIPS} WHERE {since}").first().n
+    total = preds + skips
+    if total == 0:
+        print(f"[SKIP] skip rate: no predictions or skips in the last {days} days")
+        return
+    rate = skips / total
+    msg = f"skip rate last {days}d: {skips}/{total} = {rate:.1%} (limit < {max_rate:.0%})"
+    if rate >= max_rate:
+        print(f"[FAIL] {msg}")
+    assert rate < max_rate, msg
+    print(f"[PASS] {msg}")
+
+
+def assert_no_call_collapse(days=14, min_rows=20, max_share=0.90):
+    """Per variant, no single call may exceed max_share of live predictions; fail once listing all collapsed."""
+    rows = spark.sql(f"""
+        SELECT variant, call, COUNT(*) AS n,
+               SUM(COUNT(*)) OVER (PARTITION BY variant) AS total
+        FROM {PREDICTIONS}
+        WHERE source = 'live' AND prediction_date >= date_sub(current_date(), {days})
+        GROUP BY variant, call
+    """).collect()
+    top = {}
+    for r in rows:
+        if r.variant not in top or r.n > top[r.variant].n:
+            top[r.variant] = r
+    if not top:
+        print(f"[SKIP] collapse check: not enough rows (0 live predictions in the last {days} days)")
+    collapsed = []
+    for variant, r in sorted(top.items()):
+        if r.total < min_rows:
+            print(f"[SKIP] collapse check {variant}: not enough rows ({r.total} < {min_rows})")
+            continue
+        share = r.n / r.total
+        msg = f"collapse check {variant}: top call '{r.call}' {r.n}/{r.total} = {share:.1%} (limit {max_share:.0%})"
+        if share > max_share:
+            collapsed.append(msg)
+            print(f"[FAIL] {msg}")
+        else:
+            print(f"[PASS] {msg}")
+    assert not collapsed, f"{len(collapsed)} variant(s) collapsed: " + "; ".join(collapsed)
+
+
+def check_predictions():
+    assert_row_count(PREDICTIONS)
+    assert_no_nulls(PREDICTIONS, ["symbol", "prediction_date", "source", "variant", "call"])
+    assert_calls_valid(PREDICTIONS)
+    assert_skip_rate()
+    assert_no_call_collapse()
+
+
+CHECKS = {"bronze": check_bronze, "silver": check_silver, "gold": check_gold, "predictions": check_predictions}
 
 
 if __name__ == "__main__":
