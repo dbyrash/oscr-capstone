@@ -25,16 +25,15 @@ gold_df = (
 )
 
 gold_df.write.format("delta").mode("overwrite").option("overwriteSchema", "true").saveAsTable("bootcamp_students.oscr_gold.symbol_analyst_sentiment")
-spark.table("bootcamp_students.oscr_gold.symbol_analyst_sentiment").show()
 
 # COMMAND ----------
 
 from pyspark.sql.window import Window
-from pyspark.sql.functions import col, lag, round as spark_round 
+from pyspark.sql.functions import col, lag, round as spark_round
 
-estimates = spark.table("bootcamp_students.oscr_silver.fmp_analyst_estimates") 
+estimates = spark.table("bootcamp_students.oscr_silver.fmp_analyst_estimates")
 
-symbol_window = Window.partitionBy("symbol").orderBy("date") 
+symbol_window = Window.partitionBy("symbol").orderBy("date")
 
 gold_estimates = (
     estimates
@@ -53,23 +52,7 @@ gold_estimates = (
 
 gold_estimates.write.format("delta").mode("overwrite").option("overwriteSchema", "true").saveAsTable("bootcamp_students.oscr_gold.symbol_forward_estimates")
 
-spark.table("bootcamp_students.oscr_gold.symbol_forward_estimates") \
-    .select("symbol", "date", "revenueAvg", "revenue_yoy_growth_pct", "epsAvg", "eps_yoy_growth_pct", "numAnalystsRevenue", "numAnalystsEps") \
-    .show()
-
 # COMMAND ----------
-
-from pyspark.sql.functions import date_format, trunc, count, col
-
-spark.table("bootcamp_students.oscr_silver.finnhub_company_news") \
-    .withColumn("month", date_format(trunc(col("news_date"), "MM"), "yyyy-MM")) \
-    .groupBy("related", "month") \
-    .agg(count("*").alias("article_count")) \
-    .orderBy("related", "month") \
-    .show(50)
-
-# COMMAND ----------
-
 
 gold_app_rankings = (
     spark.table("bootcamp_students.oscr_silver.appstore_top_free")
@@ -78,7 +61,6 @@ gold_app_rankings = (
 )
 
 gold_app_rankings.write.format("delta").mode("overwrite").option("overwriteSchema", "true").saveAsTable("bootcamp_students.oscr_gold.app_rankings_by_brand")
-spark.table("bootcamp_students.oscr_gold.app_rankings_by_brand").show()
 
 # COMMAND ----------
 
@@ -99,11 +81,10 @@ reviews_agg = (
 gold_show_engagement = (
     reviews_agg
     .join(shows, reviews_agg["_show_id"] == shows["show_id"], how="left")
-    .drop("show_id") 
+    .drop("show_id")
 )
 
 gold_show_engagement.write.format("delta").mode("overwrite").saveAsTable("bootcamp_students.oscr_gold.show_engagement")
-spark.table("bootcamp_students.oscr_gold.show_engagement").show(truncate=False)
 
 # COMMAND ----------
 
@@ -129,12 +110,3 @@ spark.sql(f"""
             WHERE snapshot_date = '{latest_date}'
         """)
 today_snapshot.write.mode("append").saveAsTable("bootcamp_students.oscr_gold.app_rank_history")
-today_snapshot.show()
-
-# COMMAND ----------
-
-# MAGIC %sql
-# MAGIC SELECT snapshot_date, COUNT(*) AS row_count, COUNT(DISTINCT id, _storefront) AS distinct_apps
-# MAGIC FROM bootcamp_students.oscr_gold.app_rank_history
-# MAGIC GROUP BY snapshot_date
-# MAGIC ORDER BY snapshot_date

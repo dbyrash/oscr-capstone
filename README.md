@@ -1,6 +1,6 @@
 # OSCR (Online Streaming Content Radar)
 
-A daily pipeline that tracks Netflix and Disney+ popularity, makes a rise / hold / fall call for each brand, and grades its own calls a week later.
+A self-grading pipeline that tests whether AI calls on streaming popularity beat simple baselines.
 
 Example: Netflix's app rank has slid for a week, analysts are cooling, and reviewers complain about a new season. The agent calls `fall` and cites those reviews. Seven days later the scorecard checks whether the rank really fell.
 
@@ -90,15 +90,53 @@ erDiagram
   predictions }o--o{ rag_text_corpus : "retrieved_doc_ids"
 ```
 
+## Data lineage
+
+Every source's path from raw to the table that uses it.
+
+| Source | Bronze | Silver | Gold | Used by |
+|---|---|---|---|---|
+| App Store RSS (US) | `appstore_top_free` | `appstore_top_free` (MERGE, brand aliases) | `app_rank_history`, view `brand_popularity`, `app_rankings_by_brand` | Agent signal, scorecard truth, popularity dashboard |
+| Finnhub recommendations | `finnhub_recommendation_trends` | same | `symbol_analyst_sentiment` | Agent signal, sentiment dashboard |
+| Finnhub company news | `finnhub_company_news` | same | `rag_text_corpus`, plus `news_count` in `symbol_analyst_sentiment` | RAG retrieval |
+| FMP estimates | `fmp_analyst_estimates` | same | `symbol_forward_estimates` | Agent signal, revenue growth dashboard |
+| TMDB reviews | `tmdb_reviews` | same (joined to show names) | `rag_text_corpus`, `show_engagement` | RAG retrieval, engagement dashboard |
+| TMDB trending shows | `tmdb_trending_shows` | same | `show_engagement` | Engagement dashboard |
+| TMDB watch providers | `tmdb_watch_providers` | same | none yet | Not used downstream |
+
+`rag_text_corpus` is built in the silver notebook (`02`) and feeds the Vector Search index (`04`).
+
 ## Orchestration
 
 One Databricks Workflow (`oscr popularity pipeline`) runs daily at 08:00 America/Los_Angeles. A data-quality gate sits after every layer, so a bad batch stops before the next stage.
 
-```
-ingest -> bronze -> DQ -> silver -> DQ -> gold -> DQ -> index sync -> agent -> scorecard
+```mermaid
+flowchart LR
+  F["00 fetch to volume"] --> B["01 bronze"]
+  B --> Q1{{"DQ bronze"}}
+  Q1 --> S["02 silver"]
+  S --> Q2{{"DQ silver"}}
+  Q2 --> G["03 gold"]
+  G --> Q3{{"DQ gold"}}
+  Q3 --> V["04 vector index sync"]
+  V --> A["05 agent"]
+  A --> SC["06 scorecard"]
+  A --> Q4{{"DQ predictions"}}
+  F -. fail .-> E(["Email alert"])
+  Q1 -. fail .-> E
+  Q2 -. fail .-> E
+  Q3 -. fail .-> E
+  Q4 -. fail .-> E
+  classDef gate fill:#fff3cd,stroke:#b58900,color:#333
+  classDef alert fill:#f8d7da,stroke:#d33,color:#333
+  class Q1,Q2,Q3,Q4 gate
+  class E alert
+  linkStyle 10,11,12,13,14 stroke:#d33,color:#d33
 ```
 
-The gates check row counts, nulls, duplicate keys, empty tables, and freshness: the newest `_fetched_at` in every source must be under 36 hours old. The fetch step fails the run if a required API call fails, and a failed run sends an email.
+Yellow hexagons are data-quality gates. A failed gate stops everything downstream and emails me. The predictions gate runs beside the scorecard, so a bad batch of calls raises an alert without blocking scoring.
+
+The gates check row counts, nulls, duplicate keys, empty tables, and freshness: the newest `_fetched_at` in every source must be under 36 hours old. The predictions gate checks the agent's output: valid calls, skip rate, and one call dominating. The fetch step fails the run if a required API call fails, and a failed run sends an email.
 
 ![Workflow run history](screenshots/workflow_run_history.png)
 
@@ -181,6 +219,14 @@ TMDB review counts per show. The text signal is thin: 1 to 8 reviews per show.
 - 84 overlapping windows give wide intervals.
 - No snapshots exist from Oct 18 to Nov 15.
 - Only the US storefront and the two flagship apps are tracked.
+
+## Next steps
+
+- **Append-only bronze for news and reviews.** Today they are fully refreshed, which is why news before Nov 10 is gone. Keep every raw pull and let silver dedupe.
+- **Move the checks to Delta Live Tables expectations.** Same rules, declared instead of hand-written asserts.
+- **Score the first live predictions on Nov 27**, then compare RAG against no-RAG on live data.
+- **Use or drop `tmdb_watch_providers`.** It is fetched, stored and freshness-checked, but nothing reads it.
+- **Refresh `docs_schema.md`.** It predates `_fetched_at` and still lists the dropped streaming and Polygon tables.
 
 ## Run it
 
