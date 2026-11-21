@@ -138,6 +138,10 @@ flowchart LR
 
 Yellow hexagons are data-quality gates. A failed gate stops everything downstream and emails me. The predictions gate runs beside the scorecard, so a bad batch of calls raises an alert without blocking scoring.
 
+![Live workflow in Databricks](screenshots/workflow_dag.png)
+
+The same 11 tasks in the live job, including the predictions gate.
+
 The gates check row counts, nulls, duplicate keys, empty tables, and freshness: the newest `_fetched_at` in every source must be under 36 hours old. The predictions gate checks the agent's output: valid calls, skip rate, and one call dominating. The fetch step fails the run if a required API call fails, and a failed run sends an email.
 
 ![Workflow run history](screenshots/workflow_run_history.png)
